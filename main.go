@@ -27,6 +27,8 @@ var hopHeaders = []string{
 	"Upgrade",
 }
 
+var proxy_base_url = "PROXY_BASE_URL"
+
 var helpText = fmt.Sprintf(strings.Replace(`NAME
     corsproxy - adds cors headers to requests
 
@@ -40,21 +42,24 @@ DESCRIPTION
 
     The following additional headers are added to the proxied request:
 
-        Access-Control-Allow-Origin   - Allows access from all origins
-        Access-Control-Expose-Headers - Allows the browser to access
-                                        all headers.
-        X-Request-URL                 - The requested URL
-        X-Final-URL                   - The final URL after redirects
+        Access-Control-Allow-Origin       - Allows access from all origins
+        Access-Control-Expose-Headers     - Allows the browser to access
+                                            all headers.
+        Access-Control-Allow-Credentials  - Allows the browser to access Credentials
+        Access-Control-Allow-Headers      - Allows the browser to access
+
+        X-Request-URL                     - The requested URL
+        X-Final-URL                       - The final URL after redirects
 
     The timeout for requests is %d seconds, and corsproxy will follow up
     to %d redirects.
 
-    To prevent abuse, the Origin or X-Requested-With headers must be set.
-    These headers are set automatically when using XHR or fetch.
+    You can also use the %s env variable to append a base url to the request, in other words, use it as a transparant proxy.
 
 ABOUT
-    Source Code - https://github.com/pgaskin/corsproxy
-`, "\t", "    ", -1), timeout, maxRedirects)
+    Source Code at https://github.com/marcosdiez/corsproxy
+    Forked from https://github.com/pgaskin/corsproxy
+`, "\t", "    ", -1), timeout, maxRedirects, proxy_base_url)
 
 var client = &http.Client{
 	Timeout: time.Second * time.Duration(timeout),
@@ -83,6 +88,11 @@ func main() {
 	}
 
 	fmt.Printf("Listening on %s\n", listenAddr)
+
+	if os.Getenv(proxy_base_url) != "" {
+		fmt.Printf("Using [%s] as the base proxy URL\n", os.Getenv(proxy_base_url))
+	}
+
 	err := http.ListenAndServe(listenAddr, http.HandlerFunc(handleCORS))
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -91,7 +101,11 @@ func main() {
 }
 
 func handleCORS(w http.ResponseWriter, req *http.Request) {
-	p := strings.TrimLeft(req.URL.Path, "/")
+
+	full_url := fmt.Sprintf("%s%s", os.Getenv(proxy_base_url), req.URL.Path)
+	p := strings.TrimLeft(full_url, "/")
+	// fmt.Printf("Request: %s %s %+v %s\n\n", req.Method, full_url, req.Header, req.Body)
+
 	if p == "" {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, helpText)
@@ -102,11 +116,11 @@ func handleCORS(w http.ResponseWriter, req *http.Request) {
 		p += "?" + q
 	}
 
-	if req.Header.Get("Origin") == "" && req.Header.Get("X-Requested-With") == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, "Error: Origin or X-Requested-With must be specified.")
-		return
-	}
+	// if req.Header.Get("Origin") == "" && req.Header.Get("X-Requested-With") == "" {
+	// 	w.WriteHeader(http.StatusBadRequest)
+	// 	fmt.Fprintf(w, "Error: Origin or X-Requested-With must be specified.")
+	// 	return
+	// }
 
 	u, err := url.Parse(p)
 	if err != nil {
@@ -142,7 +156,6 @@ func handleCORS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-
 	expose := []string{"X-Request-URL"}
 	for key := range resp.Header {
 		for _, ignore := range append(hopHeaders, headerBlacklist...) {
@@ -155,11 +168,13 @@ func handleCORS(w http.ResponseWriter, req *http.Request) {
 	}
 
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	w.Header().Set("Access-Control-Allow-Headers", "*")
 	w.Header().Set("Access-Control-Expose-Headers", strings.Join(expose, ","))
 	w.Header().Set("X-Request-URL", u.String())
 	w.Header().Set("X-Final-URL", resp.Request.URL.String())
-
 	w.WriteHeader(resp.StatusCode)
-
 	io.Copy(w, resp.Body)
+	fmt.Printf("%s %s -> %d\n", req.Method, full_url, resp.StatusCode)
+	// fmt.Printf("Response: %d %+v %s\n\n\n", resp.StatusCode, w.Header(), resp.Body)
 }
